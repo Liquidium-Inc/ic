@@ -3,6 +3,7 @@ type EthereumNetwork = variant {
     Mainnet;
     // The public Ethereum Sepolia testnet.
     Sepolia;
+    Hyperliquid;
 };
 
 type Subaccount = blob;
@@ -234,6 +235,21 @@ type GasFeeEstimate = record {
     // Timestamp of when the price was estimated.
     // Nanoseconds since the UNIX epoch.
     timestamp: nat64;
+};
+
+// Result returned by calling the Ethereum JSON-RPC `eth_feeHistory` endpoint.
+type FeeHistory = record {
+    // The oldest block index (inclusive) for which the fee metrics are included.
+    oldest_block : nat;
+
+    // Base fee per gas for each block in the requested range.
+    base_fee_per_gas : vec nat;
+
+    // Gas used ratio for each block in the requested range.
+    gas_used_ratio : vec float64;
+
+    // Priority fees paid to miners in each block grouped by reward percentile.
+    reward : vec vec nat;
 };
 
 type EthTransaction = record { transaction_hash : text };
@@ -611,6 +627,9 @@ service : (MinterArg) -> {
 
     // Returns internal minter parameters
     get_minter_info : () -> (MinterInfo) query;
+
+    // Update the cached fee history from an off-chain worker.
+    set_fee_history_cache : (FeeHistory) -> ();
 
     // Withdraw the specified amount in Wei to the given Ethereum address.
     // IMPORTANT: The current gas limit is set to 21,000 for a transaction so withdrawals to smart contract addresses will likely fail.

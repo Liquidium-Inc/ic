@@ -49,6 +49,7 @@ use ic_cketh_minter::{endpoints, erc20};
 use ic_ethereum_types::Address;
 use ic_http_types::{HttpRequest, HttpResponse, HttpResponseBuilder};
 use icrc_ledger_types::icrc1::account::Account;
+use evm_rpc_types::FeeHistory;
 use std::collections::BTreeSet;
 use std::convert::TryFrom;
 use std::str::FromStr;
@@ -259,6 +260,16 @@ async fn get_minter_info() -> MinterInfo {
             evm_rpc_id: Some(s.evm_rpc_id),
         }
     })
+}
+
+#[update]
+fn set_fee_history_cache(fee_history: FeeHistory) {
+    let caller = validate_caller_not_anonymous();
+    if !ic_cdk::api::is_controller(&caller) {
+        ic_cdk::trap("ERROR: only controllers can update the fee history cache");
+    }
+    log!(INFO, "[set_fee_history_cache]: updating cache from offchain worker");
+    state::cache_fee_history_from_offchain(fee_history);
 }
 
 #[update]

@@ -4,6 +4,8 @@
   <a href="https://sepolia.etherscan.io/address/{{address}}"><code>{{address}}</code></a>
   {%- when EthereumNetwork::Mainnet -%}
   <a href="https://etherscan.io/address/{{address}}"><code>{{address}}</code></a>
+  {%- when EthereumNetwork::Hyperliquid -%}
+  <a href="https://explorer.hyperliquid.xyz/address/{{address}}"><code>{{address}}</code></a>
 {% endmatch %}
 {%- endmacro %}
 
@@ -13,6 +15,8 @@
   <a href="https://sepolia.etherscan.io/block/{{block_number.to_string_inner()}}"><code>{{block_number.to_string_inner()}}</code></a>
   {%- when EthereumNetwork::Mainnet -%}
   <a href="https://etherscan.io/block/{{block_number.to_string_inner()}}"><code>{{block_number.to_string_inner()}}</code></a>
+  {%- when EthereumNetwork::Hyperliquid -%}
+  <a href="https://explorer.hyperliquid.xyz/block/{{block_number.to_string_inner()}}"><code>{{block_number.to_string_inner()}}</code></a>
 {% endmatch %}
 {%- endmacro %}
 
@@ -22,6 +26,8 @@
   <a href="https://sepolia.etherscan.io/tx/{{txhash}}"><code>{{txhash}}</code></a>
   {%- when EthereumNetwork::Mainnet -%}
   <a href="https://etherscan.io/tx/{{txhash}}"><code>{{txhash}}</code></a>
+  {%- when EthereumNetwork::Hyperliquid -%}
+  <a href="https://explorer.hyperliquid.xyz/tx/{{txhash}}"><code>{{txhash}}</code></a>
 {% endmatch %}
 {%- endmacro %}
 
@@ -34,11 +40,27 @@
 {% endmatch %}
 {%- endmacro %}
 
+{% macro ck_native_token_symbol() -%}
+{% match ethereum_network %}
+  {%- when EthereumNetwork::Sepolia -%}ckSepoliaETH
+  {%- when EthereumNetwork::Mainnet -%}ckETH
+  {%- when EthereumNetwork::Hyperliquid -%}ckHype
+{% endmatch %}
+{%- endmacro %}
+
+{% macro native_token_symbol() -%}
+{% match ethereum_network %}
+  {%- when EthereumNetwork::Sepolia -%}Sepolia ETH
+  {%- when EthereumNetwork::Mainnet -%}ETH
+  {%- when EthereumNetwork::Hyperliquid -%}HYPE
+{% endmatch %}
+{%- endmacro %}
+
 <!DOCTYPE html>
 <html lang="en">
 
 <head>
-    <title>ckETH and ckERC20 Minter Dashboard</title>
+    <title>{% call ck_native_token_symbol() %} and ckERC20 Minter Dashboard</title>
     <style>
         body {
             font-family: monospace;
@@ -112,7 +134,7 @@
                         <td>{% call etherscan_address_link(minter_address) %}</td>
                     </tr>
                     <tr id="cketh-ledger-canister-id">
-                        <th>ckETH ledger canister ID</th>
+                        <th>{% call ck_native_token_symbol() %} ledger canister ID</th>
                         <td><code>{{ cketh_ledger_id }}</code></td>
                     </tr>
                     <tr id="tecdsa-key-name">
@@ -124,11 +146,11 @@
                         <td>{{ next_transaction_nonce }}</td>
                     </tr>
                     <tr id="minimum-withdrawal-amount">
-                        <th>Minimum ETH withdrawal amount (Wei)</th>
+                        <th>Minimum {% call native_token_symbol() %} withdrawal amount (Wei)</th>
                         <td>{{ minimum_withdrawal_amount }}</td>
                     </tr>
                     <tr id="eth-balance">
-                        <th>Total ETH managed (Wei)</th>
+                        <th>Total {% call native_token_symbol() %} managed (Wei)</th>
                         <td>{{ eth_balance.eth_balance() }}</td>
                     </tr>
                     <tr id="total-effective-tx-fees">
@@ -308,7 +330,7 @@
             {% endif %}
 
             {% if !withdrawal_requests.is_empty() %}
-            <h3 id="withdrawal-requests">Withdrawal Requests ckETH → ETH and ckERC20 → ERC20</h3>
+            <h3 id="withdrawal-requests">Withdrawal Requests {% call ck_native_token_symbol() %} → {% call native_token_symbol() %} and ckERC20 → ERC20</h3>
             <table>
                 <thead>
                 <tr>
@@ -334,7 +356,7 @@
             {% endif %}
 
             {% if !pending_transactions.is_empty() %}
-            <h3 id="pending-transactions">Pending Transactions ckETH → ETH and ckERC20 → ERC20</h3>
+            <h3 id="pending-transactions">Pending Transactions {% call ck_native_token_symbol() %} → {% call native_token_symbol() %} and ckERC20 → ERC20</h3>
             <table>
                 <thead>
                 <tr>
@@ -360,7 +382,7 @@
             {% endif %}
 
             {% if !finalized_transactions_table.is_empty() %}
-            <h3 id="finalized-transactions">Finalized Transactions ckETH → ETH and ckERC20 → ERC20</h3>
+            <h3 id="finalized-transactions">Finalized Transactions {% call ck_native_token_symbol() %} → {% call native_token_symbol() %} and ckERC20 → ERC20</h3>
             <table>
                 <thead>
                 <tr>
@@ -468,4 +490,3 @@
     </script>
     </body>
 </html>
-

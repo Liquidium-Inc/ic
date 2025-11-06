@@ -73,6 +73,7 @@ impl TryFrom<InitArg> for State {
                 })?;
         let evm_rpc_id = evm_rpc_id.unwrap_or(match ethereum_network {
             EthereumNetwork::Mainnet => EVM_RPC_ID_PRODUCTION,
+            EthereumNetwork::Hyperliquid => EVM_RPC_ID_PRODUCTION,
             EthereumNetwork::Sepolia => EVM_RPC_ID_STAGING,
         });
         let mut log_scrapings = LogScrapings::new(last_scraped_block_number);
@@ -102,6 +103,7 @@ impl TryFrom<InitArg> for State {
             active_tasks: Default::default(),
             http_request_counter: 0,
             last_transaction_price_estimate: None,
+            fee_history_cache: None,
             ledger_suite_orchestrator_id: None,
             evm_rpc_id,
             ckerc20_tokens: Default::default(),

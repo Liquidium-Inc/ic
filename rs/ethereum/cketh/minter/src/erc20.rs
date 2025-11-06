@@ -42,6 +42,7 @@ impl CkTokenSymbol {
         match state.ethereum_network {
             EthereumNetwork::Mainnet => Self::from_str("ckETH").unwrap(),
             EthereumNetwork::Sepolia => Self::from_str("ckSepoliaETH").unwrap(),
+            EthereumNetwork::Hyperliquid => Self::from_str("ckHype").unwrap(),
         }
     }
 }

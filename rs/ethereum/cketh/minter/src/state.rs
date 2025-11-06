@@ -15,6 +15,7 @@ use crate::state::eth_logs_scraping::{LogScrapingId, LogScrapings};
 use crate::state::transactions::{Erc20WithdrawalRequest, TransactionCallData, WithdrawalRequest};
 use crate::tx::GasFeeEstimate;
 use candid::Principal;
+use evm_rpc_types::FeeHistory;
 use ic_canister_log::log;
 use ic_cdk::api::management_canister::ecdsa::EcdsaPublicKeyResponse;
 use ic_ethereum_types::Address;
@@ -87,6 +88,8 @@ pub struct State {
     pub http_request_counter: u64,
 
     pub last_transaction_price_estimate: Option<(u64, GasFeeEstimate)>,
+    /// Cached fee history fetched from the EVM RPC canister.
+    pub fee_history_cache: Option<FeeHistoryCache>,
 
     /// Canister ID of the ledger suite orchestrator that
     /// can add new ERC-20 token to the minter
@@ -101,6 +104,28 @@ pub struct State {
     /// - secondary key: ERC-20 contract address on Ethereum
     /// - value: ckERC20 token symbol
     pub ckerc20_tokens: DedupMultiKeyMap<Principal, Address, CkTokenSymbol>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+pub enum FeeHistoryCacheSource {
+    OnChain,
+    Offchain,
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct FeeHistoryCache {
+    pub timestamp_ns: u64,
+    pub fee_history: FeeHistory,
+    pub source: FeeHistoryCacheSource,
+}
+
+impl FeeHistoryCache {
+    pub fn is_fresh(&self, now_ns: u64, ttl_ns: u64) -> bool {
+        match self.source {
+            FeeHistoryCacheSource::Offchain => true,
+            FeeHistoryCacheSource::OnChain => now_ns < self.timestamp_ns.saturating_add(ttl_ns),
+        }
+    }
 }
 
 #[derive(Eq, PartialEq, Debug)]
@@ -161,6 +186,7 @@ impl State {
         }
         let cketh_ledger_transfer_fee = match self.ethereum_network {
             EthereumNetwork::Mainnet => Wei::new(2_000_000_000_000),
+            EthereumNetwork::Hyperliquid => Wei::new(2_000_000_000_000),
             EthereumNetwork::Sepolia => Wei::new(10_000_000_000),
         };
         if self.cketh_minimum_withdrawal_amount < cketh_ledger_transfer_fee {
@@ -179,6 +205,40 @@ impl State {
                 ic_cdk::trap(format!("failed to decode minter's public key: {e:?}"))
             });
         Some(ecdsa_public_key_to_address(&pubkey))
+    }
+
+    pub fn update_fee_history_cache(
+        &mut self,
+        fee_history: FeeHistory,
+        source: FeeHistoryCacheSource,
+        timestamp_ns: u64,
+    ) {
+        if let Some(existing) = &self.fee_history_cache {
+            if existing.timestamp_ns > timestamp_ns {
+                return;
+            }
+            if existing.timestamp_ns == timestamp_ns
+                && matches!(
+                    (existing.source, source),
+                    (
+                        FeeHistoryCacheSource::Offchain,
+                        FeeHistoryCacheSource::OnChain
+                    )
+                )
+            {
+                // Preserve data supplied by the offchain worker when timestamps tie.
+                return;
+            }
+        }
+        self.fee_history_cache = Some(FeeHistoryCache {
+            timestamp_ns,
+            fee_history,
+            source,
+        });
+    }
+
+    pub fn fee_history_cache(&self) -> Option<&FeeHistoryCache> {
+        self.fee_history_cache.as_ref()
     }
 
     pub fn is_ckerc20_feature_active(&self) -> bool {
@@ -606,6 +666,13 @@ where
             .as_mut()
             .expect("BUG: state is not initialized"))
     })
+}
+
+pub fn cache_fee_history_from_offchain(fee_history: FeeHistory) {
+    let timestamp_ns = ic_cdk::api::time();
+    mutate_state(|s| {
+        s.update_fee_history_cache(fee_history, FeeHistoryCacheSource::Offchain, timestamp_ns);
+    });
 }
 
 pub async fn lazy_call_ecdsa_public_key() -> PublicKey {

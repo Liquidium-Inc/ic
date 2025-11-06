@@ -10,7 +10,7 @@ use evm_rpc_client::{EvmRpcClient, IcRuntime, OverrideRpcConfig};
 use evm_rpc_types::{
     Block, BlockTag, ConsensusStrategy, EthSepoliaService, FeeHistory, FeeHistoryArgs, GetLogsArgs,
     GetLogsRpcConfig as EvmGetLogsRpcConfig, GetTransactionCountArgs as EvmGetTransactionCountArgs,
-    Hex20, HttpOutcallError, LogEntry, MultiRpcResult as EvmMultiRpcResult,
+    Hex20, HttpOutcallError, LogEntry, MultiRpcResult as EvmMultiRpcResult, RpcApi,
     RpcConfig as EvmRpcConfig, RpcError, RpcService as EvmRpcService,
     RpcServices as EvmRpcServices, SendRawTransactionStatus, TransactionReceipt,
 };
@@ -34,7 +34,7 @@ mod tests;
 const HEADER_SIZE_LIMIT: u64 = 2 * 1024;
 // We expect most of the calls to contain zero events.
 const ETH_GET_LOGS_INITIAL_RESPONSE_SIZE_ESTIMATE: u64 = 100;
-const TOTAL_NUMBER_OF_PROVIDERS: u8 = 4;
+const TOTAL_NUMBER_OF_PROVIDERS: u8 = 1;
 
 #[derive(Debug)]
 pub struct EthRpcClient {
@@ -62,10 +62,24 @@ impl EthRpcClient {
                 EthSepoliaService::Alchemy,
                 EthSepoliaService::Ankr,
             ])),
+            EthereumNetwork::Hyperliquid => EvmRpcServices::Custom {
+                chain_id: 998u64,
+                services: vec![
+                    RpcApi {
+                        url: "https://hyperliquid-testnet.drpc.org".to_string(),
+                        headers: None,
+                    },
+                    // RpcApi {
+                    //     url: "https://twilight-sleek-asphalt.hype-mainnet.quiknode.pro/ec9c21416d98df2a1b25e89b90ad38e07ecac0ed/evm".to_string(),
+                    //     headers: None,
+                    // },
+                ],
+            },
         };
         let min_threshold = match chain {
             EthereumNetwork::Mainnet => 3_u8,
-            EthereumNetwork::Sepolia => 2_u8,
+            EthereumNetwork::Sepolia => 1_u8,
+            EthereumNetwork::Hyperliquid => 1_u8,
         };
         assert!(
             min_threshold <= TOTAL_NUMBER_OF_PROVIDERS,

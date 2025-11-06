@@ -1040,6 +1040,7 @@ fn state_equivalence() {
         erc20_balances: Default::default(),
         skipped_blocks: Default::default(),
         last_transaction_price_estimate: None,
+        fee_history_cache: None,
         ledger_suite_orchestrator_id: Some("2s5qh-7aaaa-aaaar-qadya-cai".parse().unwrap()),
         evm_rpc_id: EVM_RPC_ID_PRODUCTION,
         ckerc20_tokens,

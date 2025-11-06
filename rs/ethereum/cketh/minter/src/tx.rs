@@ -7,7 +7,9 @@ use crate::eth_rpc_client::{EthRpcClient, MultiCallError};
 use crate::guard::TimerGuard;
 use crate::logs::{DEBUG, INFO};
 use crate::numeric::{BlockNumber, GasAmount, TransactionNonce, Wei, WeiPerGas};
-use crate::state::{TaskType, lazy_call_ecdsa_public_key, mutate_state, read_state};
+use crate::state::{
+    FeeHistoryCacheSource, TaskType, lazy_call_ecdsa_public_key, mutate_state, read_state,
+};
 use ethnum::u256;
 use evm_rpc_types::{BlockTag, FeeHistory, FeeHistoryArgs};
 use ic_canister_log::log;
@@ -648,13 +650,44 @@ pub async fn lazy_refresh_gas_fee_estimate() -> Option<GasFeeEstimate> {
     }
 
     async fn eth_fee_history() -> Result<FeeHistory, MultiCallError<FeeHistory>> {
-        read_state(EthRpcClient::from_state)
+        let now_ns = ic_cdk::api::time();
+        let cached = read_state(|s| s.fee_history_cache.clone());
+        if let Some(cache) = cached.as_ref() {
+            if cache.is_fresh(now_ns, MAX_AGE_NS) {
+                return Ok(cache.fee_history.clone());
+            }
+        }
+
+        match read_state(EthRpcClient::from_state)
             .eth_fee_history(FeeHistoryArgs {
                 block_count: 5_u8.into(),
                 newest_block: BlockTag::Latest,
                 reward_percentiles: Some(vec![20]),
             })
             .await
+        {
+            Ok(fee_history) => {
+                let refreshed_at = ic_cdk::api::time();
+                mutate_state(|s| {
+                    s.update_fee_history_cache(
+                        fee_history.clone(),
+                        FeeHistoryCacheSource::OnChain,
+                        refreshed_at,
+                    );
+                });
+                Ok(fee_history)
+            }
+            Err(err) => {
+                if let Some(cache) = cached {
+                    log!(
+                        INFO,
+                        "[refresh_gas_fee_estimate]: Falling back to cached fee history after error: {err:?}",
+                    );
+                    return Ok(cache.fee_history);
+                }
+                Err(err)
+            }
+        }
     }
 
     let now_ns = ic_cdk::api::time();
