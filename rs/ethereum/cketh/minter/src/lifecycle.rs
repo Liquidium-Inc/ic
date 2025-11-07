@@ -29,7 +29,7 @@ pub enum EthereumNetwork {
     #[n(11155111)]
     #[default]
     Sepolia,
-    #[n(998)]
+    #[n(999)]
     Hyperliquid,
 }
 
@@ -38,7 +38,7 @@ impl EthereumNetwork {
         match self {
             EthereumNetwork::Mainnet => 1,
             EthereumNetwork::Sepolia => 11155111,
-            EthereumNetwork::Hyperliquid => 998,
+            EthereumNetwork::Hyperliquid => 999,
         }
     }
 }
@@ -50,7 +50,7 @@ impl TryFrom<u64> for EthereumNetwork {
         match value {
             1 => Ok(EthereumNetwork::Mainnet),
             11155111 => Ok(EthereumNetwork::Sepolia),
-            998 => Ok(EthereumNetwork::Hyperliquid),
+            999 => Ok(EthereumNetwork::Hyperliquid),
             _ => Err("Unknown Ethereum Network".to_string()),
         }
     }

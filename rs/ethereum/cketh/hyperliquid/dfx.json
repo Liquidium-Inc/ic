@@ -48,7 +48,7 @@
       "candid": "../../../ledger_suite/icrc1/archive/archive.did",
       "shrink": false
     },
-    "orchestrator": {
+    "ckhype_orchestrator": {
       "type": "custom",
       "build": [
         "bazel build //rs/ethereum/ledger-suite-orchestrator:ledger_suite_orchestrator_canister.wasm.gz"

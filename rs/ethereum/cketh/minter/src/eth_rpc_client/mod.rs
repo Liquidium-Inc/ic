@@ -63,10 +63,10 @@ impl EthRpcClient {
                 EthSepoliaService::Ankr,
             ])),
             EthereumNetwork::Hyperliquid => EvmRpcServices::Custom {
-                chain_id: 998u64,
+                chain_id: 999u64,
                 services: vec![
                     RpcApi {
-                        url: "https://hyperliquid-testnet.drpc.org".to_string(),
+                        url: "https://ic-alloy-evm-rpc-proxy.fibot.workers.dev".to_string(),
                         headers: None,
                     },
                     // RpcApi {

@@ -51,9 +51,6 @@ impl FromStr for CkTokenSymbol {
     type Err = String;
 
     fn from_str(token_symbol: &str) -> Result<Self, Self::Err> {
-        if !token_symbol.starts_with("ck") {
-            return Err("ERROR: token symbol does not start with 'ck' prefix".to_string());
-        }
         if token_symbol.len() > MAX_CK_TOKEN_SYMBOL_NUM_BYTES {
             return Err(format!(
                 "ERROR: token symbol is too long: expected at most {} characters, but got {}",
