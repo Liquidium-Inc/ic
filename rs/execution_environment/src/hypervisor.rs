@@ -3,8 +3,8 @@ use ic_config::execution_environment::{Config, MAX_COMPILATION_CACHE_SIZE};
 use ic_config::flag_status::FlagStatus;
 use ic_cycles_account_manager::{CyclesAccountManager, CyclesAccountManagerSubnetConfig};
 use ic_embedders::{
-    CompilationCache, CompilationCacheBuilder, CompilationResult, WasmExecutionInput,
-    WasmtimeEmbedder,
+    CompilationCache, CompilationCacheBuilder, CompilationCachePool, CompilationResult,
+    WasmExecutionInput, WasmtimeEmbedder,
     wasm_executor::{CreatedExecutionState, WasmExecutionResult, WasmExecutor, WasmExecutorImpl},
     wasm_utils::decoding::decoded_wasm_size,
     wasmtime_embedder::system_api::{
@@ -365,9 +365,23 @@ impl Hypervisor {
         fd_factory: Arc<dyn PageAllocatorFileDescriptor>,
         state_reader: Arc<dyn StateReader<State = ReplicatedState>>,
         temp_dir: &Path,
+        compilation_cache_pool: Option<&CompilationCachePool>,
     ) -> Self {
         let mut embedder_config = config.embedders_config.clone();
         embedder_config.page_overhead = page_overhead;
+
+        // The cache key within CompilationCache is only the Wasm hash. Select a
+        // compatible cache after applying scheduler-derived instrumentation costs,
+        // otherwise code (or validation errors) from another config could be reused.
+        let compilation_cache = match compilation_cache_pool {
+            Some(pool) => pool.get_or_insert(&embedder_config),
+            None => Arc::new(
+                CompilationCacheBuilder::new()
+                    .with_memory_capacity(MAX_COMPILATION_CACHE_SIZE)
+                    .with_dir(tempfile::tempdir_in(temp_dir).unwrap())
+                    .build(),
+            ),
+        };
 
         let wasm_executor: Arc<dyn WasmExecutor> = match config.canister_sandboxing_flag {
             FlagStatus::Enabled => {
@@ -398,12 +412,7 @@ impl Hypervisor {
             own_subnet_id,
             log,
             cycles_account_manager,
-            compilation_cache: Arc::new(
-                CompilationCacheBuilder::new()
-                    .with_memory_capacity(MAX_COMPILATION_CACHE_SIZE)
-                    .with_dir(tempfile::tempdir_in(temp_dir).unwrap())
-                    .build(),
-            ),
+            compilation_cache,
             create_execution_state_base_cost: config
                 .embedders_config
                 .create_execution_state_base_cost,

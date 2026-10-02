@@ -1657,7 +1657,7 @@ pub async fn create_instance(
 
     match api_state
         .add_instance(
-            move |seed, gateway_port| {
+            move |seed, gateway_port, compilation_cache_pool| {
                 PocketIc::try_new(
                     runtime,
                     mainnet_routing_table,
@@ -1675,6 +1675,7 @@ pub async fn create_instance(
                     gateway_port,
                     instance_config.mainnet_nns_subnet_id.unwrap_or_default(),
                     malicious_flags,
+                    compilation_cache_pool,
                 )
             },
             auto_progress,

@@ -2,6 +2,56 @@ use ic_secp256k1::{DerivationIndex, DerivationPath, PrivateKey, PublicKey};
 use proptest::{collection::vec as pvec, prelude::*, prop_assert};
 
 #[test]
+fn shared_compilation_cache_uses_effective_page_overhead() {
+    use crate::{StateMachineBuilder, StateMachineConfig};
+    use ic_config::{execution_environment::Config, subnet_config::SubnetConfig};
+    use ic_embedders::CompilationCachePool;
+    use ic_registry_subnet_type::SubnetType;
+    use ic_test_utilities_metrics::fetch_histogram_stats;
+    use ic_types::NumInstructions;
+    use std::sync::Arc;
+
+    let pool = Arc::new(CompilationCachePool::default());
+    // Deliberately leave embedders_config.page_overhead untouched. The
+    // scheduler's override, not that raw value, determines compatibility.
+    for (overhead, expected_compilations) in [(100, 1), (100, 0), (101, 1), (101, 0)] {
+        let mut subnet_config = SubnetConfig::new(SubnetType::Application);
+        subnet_config.scheduler_config.page_overhead = NumInstructions::new(overhead);
+        let config = Config::default();
+        let sm = StateMachineBuilder::new()
+            .with_subnet_type(SubnetType::Application)
+            .with_config(Some(StateMachineConfig::new(subnet_config, config)))
+            .with_compilation_cache_pool(pool.clone())
+            .build();
+        let wasm = wat::parse_str(
+            r#"(module
+                    (import "ic0" "msg_reply" (func $reply))
+                    (memory (export "memory") 1)
+                    (func (export "canister_update go")
+                        (i32.store (i32.const 0) (i32.const 1))
+                        (call $reply)))"#,
+        )
+        .unwrap();
+        let id = sm
+            .install_canister_with_cycles(
+                wasm,
+                vec![],
+                None,
+                ic_types_cycles::Cycles::new(1_000_000_000_000_000),
+            )
+            .unwrap();
+        sm.execute_ingress(id, "go", vec![]).unwrap();
+        assert_eq!(
+            fetch_histogram_stats(&sm.metrics_registry, "hypervisor_wasm_compile_time_seconds")
+                .unwrap()
+                .count,
+            expected_compilations,
+        );
+        sm.drop();
+    }
+}
+
+#[test]
 fn test_remove_subnet_local_registry_records() {
     use ic_crypto_test_utils_ni_dkg::dummy_initial_dkg_transcript_with_master_key;
     use ic_crypto_utils_threshold_sig_der::threshold_sig_public_key_to_der;

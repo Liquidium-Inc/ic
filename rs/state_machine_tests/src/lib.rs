@@ -25,6 +25,7 @@ use ic_crypto_tree_hash::{
 };
 use ic_crypto_utils_threshold_sig_der::threshold_sig_public_key_to_der;
 use ic_cycles_account_manager::{CyclesAccountManager, IngressInductionCost};
+use ic_embedders::CompilationCachePool;
 use ic_error_types::RejectCode;
 pub use ic_error_types::{ErrorCode, UserError};
 use ic_execution_environment::{ExecutionServices, IngressHistoryReaderImpl};
@@ -1332,6 +1333,7 @@ impl StateMachineStateDir for PathBuf {
 }
 
 pub struct StateMachineBuilder {
+    compilation_cache_pool: Option<Arc<CompilationCachePool>>,
     state_dir: Box<dyn StateMachineStateDir>,
     nonce: u64,
     time: Time,
@@ -1375,6 +1377,7 @@ pub struct StateMachineBuilder {
 impl StateMachineBuilder {
     pub fn new() -> Self {
         Self {
+            compilation_cache_pool: None,
             state_dir: Box::new(TempDir::new().expect("failed to create a temporary directory")),
             nonce: 0,
             time: GENESIS,
@@ -1443,6 +1446,14 @@ impl StateMachineBuilder {
 
     pub fn with_config(self, config: Option<StateMachineConfig>) -> Self {
         Self { config, ..self }
+    }
+
+    /// Reuse compiled Wasm from other runtimes with the same effective configuration.
+    pub fn with_compilation_cache_pool(self, pool: Arc<CompilationCachePool>) -> Self {
+        Self {
+            compilation_cache_pool: Some(pool),
+            ..self
+        }
     }
 
     pub fn with_checkpoints_enabled(self, checkpoints_enabled: bool) -> Self {
@@ -1704,6 +1715,7 @@ impl StateMachineBuilder {
             self.cost_schedule,
             self.subnet_admins,
             self.resource_limits,
+            self.compilation_cache_pool,
         )
     }
 
@@ -2099,6 +2111,7 @@ impl StateMachine {
         cost_schedule: CanisterCyclesCostSchedule,
         subnet_admins: Vec<PrincipalId>,
         resource_limits: ResourceLimits,
+        compilation_cache_pool: Option<Arc<CompilationCachePool>>,
     ) -> Self {
         let checkpoint_interval_length = checkpoint_interval_length.unwrap_or(match subnet_type {
             SubnetType::Application | SubnetType::VerifiedApplication | SubnetType::CloudEngine => {
@@ -2249,6 +2262,7 @@ impl StateMachine {
                 Arc::clone(&state_manager.get_fd_factory()),
                 completed_execution_messages_tx,
                 &state_manager.state_layout().tmp(),
+                compilation_cache_pool.as_deref(),
             )
         });
 

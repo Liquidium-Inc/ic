@@ -273,6 +273,7 @@ impl CanisterManagerBuilder {
             Arc::new(TestPageAllocatorFileDescriptorImpl::new()),
             Arc::new(FakeStateManager::new()),
             Path::new("/tmp"),
+            None,
         );
         let hypervisor = Arc::new(hypervisor);
         CanisterManager::new(

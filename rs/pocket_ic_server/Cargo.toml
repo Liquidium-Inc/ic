@@ -39,6 +39,7 @@ ic-crypto-sha2 = { path = "../crypto/sha2" }
 ic-crypto-utils-threshold-sig-der = { path = "../crypto/utils/threshold_sig_der" }
 ic-doge-interface = { workspace = true }
 ic-ed25519 = { path = "../../packages/ic-ed25519" }
+ic-embedders = { path = "../embedders" }
 ic-error-types = { path = "../../packages/ic-error-types" }
 ic-gateway = { workspace = true }
 ic-http-endpoints-public = { path = "../http_endpoints/public" }
@@ -112,6 +113,7 @@ flate2 = { workspace = true }
 ic-btc-adapter-test-utils = { path = "../bitcoin/adapter/test_utils" }
 ic-config = { path = "../config" }
 ic-registry-transport = { path = "../registry/transport" }
+ic-test-utilities-metrics = { path = "../test_utilities/metrics" }
 nix = { workspace = true }
 prometheus = { workspace = true }
 rcgen = { workspace = true }

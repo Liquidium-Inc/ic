@@ -9,6 +9,7 @@ use std::{
 use tempfile::TempDir;
 
 use crate::{OnDiskSerializedModule, SerializedModule};
+use ic_config::{embedders::Config, execution_environment::MAX_COMPILATION_CACHE_SIZE};
 use ic_heap_bytes::HeapBytes;
 use ic_interfaces::execution_environment::{HypervisorError, HypervisorResult};
 use ic_types::{DiskBytes, NumBytes};
@@ -28,6 +29,33 @@ const DEFAULT_DISK_CAPACITY: NumBytes = NumBytes::new(100 * GB);
 /// 10 GiB is already more than we can support with the entry count limit anyway.
 const DEFAULT_MEMORY_CAPACITY: NumBytes = NumBytes::new(10 * GB);
 
+/// Retains compiled Wasm across runtimes with identical effective embedder configs.
+/// The owner must outlive individual runtimes to allow reuse after their deletion.
+#[derive(Default)]
+pub struct CompilationCachePool {
+    caches: Mutex<Vec<(Config, Arc<CompilationCache>)>>,
+}
+
+impl CompilationCachePool {
+    pub fn get_or_insert(&self, config: &Config) -> Arc<CompilationCache> {
+        let mut caches = self.caches.lock().unwrap();
+        // ponytail: few configs per server; use a map if construction-time lookup becomes costly.
+        if let Some((_, cache)) = caches.iter().find(|(key, _)| key == config) {
+            return Arc::clone(cache);
+        }
+
+        // Do not put this directory under a runtime's state directory: deleting
+        // that runtime would prevent subsequent insertions into the shared cache.
+        let mut cache = CompilationCacheBuilder::new()
+            .with_memory_capacity(MAX_COMPILATION_CACHE_SIZE)
+            .build();
+        cache.shared = true;
+        let cache = Arc::new(cache);
+        caches.push((config.clone(), Arc::clone(&cache)));
+        cache
+    }
+}
+
 /// Stores the serialized modules of wasm code that has already been compiled so
 /// that it can be used again without recompiling.
 #[derive(HeapBytes)]
@@ -41,6 +69,7 @@ pub struct CompilationCache {
     counter: AtomicU64,
     /// Limit on the total number of entries in the cache.
     max_entries: usize,
+    shared: bool,
 }
 
 impl DiskBytes for CompilationCache {
@@ -98,12 +127,23 @@ impl CompilationCacheBuilder {
             cache: Mutex::new(LruCache::new(self.memory_capacity, self.disk_capacity)),
             counter: AtomicU64::new(0),
             max_entries: self.max_entries,
+            shared: false,
         }
     }
 }
 
 impl CompilationCache {
     pub fn insert_err(&self, canister_module: &CanisterModule, err: HypervisorError) {
+        // Compiler RPC/engine failures can be transient. Sharing those errors
+        // would poison later instances even after the failed compiler has exited.
+        if self.shared
+            && !matches!(
+                err,
+                HypervisorError::InvalidWasm(_) | HypervisorError::InstrumentationFailed(_)
+            )
+        {
+            return;
+        }
         let mut cache = self.cache.lock().unwrap();
         if cache.len() >= self.max_entries {
             let _ = cache.pop_lru();
@@ -185,4 +225,62 @@ fn concurrent_insertions() {
             t.join().unwrap();
         }
     })
+}
+
+#[test]
+fn pool_retains_and_partitions_caches() {
+    let pool = CompilationCachePool::default();
+    let config = Config::default();
+    let cache = pool.get_or_insert(&config);
+    let weak = Arc::downgrade(&cache);
+    let dir = cache.dir.path().to_path_buf();
+    drop(cache);
+
+    let cache = weak.upgrade().expect("pool must retain an unused cache");
+    assert!(dir.exists());
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            scope.spawn(|| assert!(Arc::ptr_eq(&cache, &pool.get_or_insert(&config))));
+        }
+    });
+
+    let mut different_cost = config.clone();
+    different_cost.page_overhead += ic_types::NumInstructions::new(1);
+    assert!(!Arc::ptr_eq(&cache, &pool.get_or_insert(&different_cost)));
+    let mut different_validation = config;
+    different_validation.max_number_exported_functions += 1;
+    assert!(!Arc::ptr_eq(
+        &cache,
+        &pool.get_or_insert(&different_validation)
+    ));
+
+    drop(cache);
+    drop(pool);
+    assert!(weak.upgrade().is_none());
+    assert!(!dir.exists());
+}
+
+#[test]
+fn shared_cache_does_not_retain_transient_errors() {
+    let pool = CompilationCachePool::default();
+    let cache = pool.get_or_insert(&Config::default());
+    let wasm = CanisterModule::new(wat::parse_str("(module)").unwrap());
+    let transient = HypervisorError::WasmEngineError(ic_wasm_types::WasmEngineError::Unexpected(
+        "compiler RPC failed".to_string(),
+    ));
+    cache.insert_err(&wasm, transient.clone());
+    assert!(cache.get(&wasm).is_none());
+
+    let invalid =
+        HypervisorError::InvalidWasm(ic_wasm_types::WasmValidationError::TooManyExports {
+            defined: 2,
+            allowed: 1,
+        });
+    cache.insert_err(&wasm, invalid.clone());
+    assert_eq!(cache.get(&wasm).unwrap().err(), Some(invalid));
+
+    // Private caches retain their existing negative-caching behaviour.
+    let private = CompilationCacheBuilder::new().build();
+    private.insert_err(&wasm, transient.clone());
+    assert_eq!(private.get(&wasm).unwrap().err(), Some(transient));
 }

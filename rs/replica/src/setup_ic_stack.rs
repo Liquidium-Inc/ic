@@ -206,6 +206,7 @@ pub fn construct_ic_stack(
         state_manager.get_fd_factory(),
         completed_execution_messages_tx,
         &state_manager.state_layout().tmp(),
+        None,
     );
     // ---------- MESSAGE ROUTING DEPS FOLLOW ----------
     let certified_stream_store = Arc::clone(&state_manager);

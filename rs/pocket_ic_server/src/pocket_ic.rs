@@ -44,6 +44,7 @@ use ic_doge_interface::{
     CanisterArg as DogecoinCanisterArg, Fees as DogecoinFees, InitConfig as DogecoinInitConfig,
     Network as DogecoinNetwork,
 };
+use ic_embedders::CompilationCachePool;
 use ic_http_endpoints_public::query;
 use ic_http_endpoints_public::{
     IngressValidatorBuilder, QueryServiceBuilder, ReadStateServiceBuilder, call_async, call_sync,
@@ -616,6 +617,7 @@ impl Drop for PocketIcStateDir {
 }
 
 struct PocketIcSubnets {
+    compilation_cache_pool: Arc<CompilationCachePool>,
     subnet_configs: Vec<SubnetConfigInternal>,
     subnets: Arc<SubnetsImpl>,
     nns_subnet: Option<Arc<Subnet>>,
@@ -753,6 +755,7 @@ impl PocketIcSubnets {
         gateway_port: Option<u16>,
         registry_data_provider: Arc<ProtoRegistryDataProvider>,
         synced_registry_version: Option<u64>,
+        compilation_cache_pool: Arc<CompilationCachePool>,
     ) -> Self {
         let routing_table = RoutingTable::new();
         let chain_keys = BTreeMap::new();
@@ -762,6 +765,7 @@ impl PocketIcSubnets {
             .unwrap_or(ZERO_REGISTRY_VERSION);
         Self {
             subnet_configs: vec![],
+            compilation_cache_pool,
             subnets: Arc::new(SubnetsImpl::new()),
             nns_subnet: None,
             sns_subnet: None,
@@ -901,7 +905,8 @@ impl PocketIcSubnets {
             self.log_level,
             bitcoin_adapter_uds_path.clone(),
             dogecoin_adapter_uds_path.clone(),
-        );
+        )
+        .with_compilation_cache_pool(Arc::clone(&self.compilation_cache_pool));
 
         if let Some(subnet_id) = subnet_id {
             builder = builder.with_subnet_id(subnet_id);
@@ -3065,6 +3070,7 @@ impl PocketIc {
         gateway_port: Option<u16>,
         mainnet_nns_subnet_id: bool,
         malicious_flags: MaliciousFlags,
+        compilation_cache_pool: Arc<CompilationCachePool>,
     ) -> Result<Self, String> {
         if let Some(time) = initial_time {
             let systime: SystemTime = time.into();
@@ -3392,6 +3398,7 @@ impl PocketIc {
             gateway_port,
             registry_data_provider,
             synced_registry_version,
+            compilation_cache_pool,
         );
         let mut subnet_configs = Vec::new();
         for subnet_config_info in subnet_config_info.into_iter() {
@@ -6142,7 +6149,277 @@ fn remove_dir_contents(dir: impl AsRef<std::path::Path>) -> std::io::Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ic_test_utilities_metrics::{fetch_histogram_stats, fetch_int_counter_vec, labels};
     use pocket_ic::common::rest::SubnetSpec;
+
+    const TEST_CYCLES: Cycles = Cycles::new(1_000_000_000_000_000);
+
+    const COUNTER_WAT: &str = r#"(module
+        (import "ic0" "msg_reply" (func $reply))
+        (import "ic0" "msg_reply_data_append" (func $append (param i32 i32)))
+        (import "ic0" "stable_grow" (func $grow (param i32) (result i32)))
+        (import "ic0" "stable_read" (func $read (param i32 i32 i32)))
+        (import "ic0" "stable_write" (func $write (param i32 i32 i32)))
+        (memory (export "memory") 1)
+        (func (export "canister_init") (drop (call $grow (i32.const 1))))
+        (func (export "canister_update inc")
+            (i32.store (i32.const 0) (i32.add (i32.load (i32.const 0)) (i32.const 1)))
+            (call $write (i32.const 0) (i32.const 0) (i32.const 4))
+            (call $reply))
+        (func (export "canister_query read")
+            (call $read (i32.const 4) (i32.const 0) (i32.const 4))
+            (call $append (i32.const 0) (i32.const 8))
+            (call $reply)))"#;
+
+    fn cached_instance(
+        runtime: Arc<Runtime>,
+        pool: Arc<CompilationCachePool>,
+        state_dir: Option<PathBuf>,
+        icp_config: IcpConfig,
+    ) -> PocketIc {
+        let _guard = runtime.enter();
+        PocketIc::try_new(
+            runtime.clone(),
+            RoutingTable::new(),
+            0,
+            ExtendedSubnetConfigSet {
+                application: vec![SubnetSpec::default()],
+                ..Default::default()
+            },
+            state_dir,
+            icp_config,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            false,
+            MaliciousFlags::default(),
+            pool,
+        )
+        .unwrap()
+    }
+
+    fn compilation_count(sm: &StateMachine) -> u64 {
+        fetch_histogram_stats(&sm.metrics_registry, "hypervisor_wasm_compile_time_seconds")
+            .unwrap()
+            .count
+    }
+
+    #[test]
+    fn server_retains_compilation_cache_after_last_instance_deleted() {
+        let runtime = Arc::new(Runtime::new().unwrap());
+        runtime.block_on(async {
+            let api = crate::state_api::state::PocketIcApiStateBuilder::new().build();
+            for expected_compilations in [1, 0] {
+                let runtime = runtime.clone();
+                let (instance_id, _, _) = api
+                    .add_instance(
+                        move |_, _, pool| {
+                            let pic = cached_instance(runtime, pool, None, IcpConfig::default());
+                            let sm = pic.subnets.get_all().pop().unwrap().state_machine.clone();
+                            sm.install_canister_with_cycles(
+                                wat::parse_str(COUNTER_WAT).unwrap(),
+                                vec![],
+                                None,
+                                TEST_CYCLES,
+                            )
+                            .unwrap();
+                            assert_eq!(compilation_count(&sm), expected_compilations);
+                            drop(sm);
+                            Ok(pic)
+                        },
+                        None,
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                api.delete_instance(instance_id).await;
+            }
+        });
+    }
+
+    #[test]
+    fn shared_compilation_cache_survives_instance_deletion_and_parallel_restore() {
+        let runtime = Arc::new(Runtime::new().unwrap());
+        let pool = Arc::new(CompilationCachePool::default());
+        let source = TempDir::new().unwrap();
+        let wasm = wat::parse_str(COUNTER_WAT).unwrap();
+        let pic = cached_instance(
+            runtime.clone(),
+            pool.clone(),
+            Some(source.path().into()),
+            IcpConfig::default(),
+        );
+        let (canister_id, cold_balance) = {
+            let sm = pic.subnets.get_all().pop().unwrap().state_machine.clone();
+            let id = sm
+                .install_canister_with_cycles(wasm.clone(), vec![], None, TEST_CYCLES)
+                .unwrap();
+            assert_eq!(compilation_count(&sm), 1);
+            (id, sm.cycle_balance(id))
+        };
+        drop(pic);
+
+        let children: Vec<_> = (0..3)
+            .map(|_| {
+                let dir = TempDir::new().unwrap();
+                copy_dir(source.path(), dir.path()).unwrap();
+                dir
+            })
+            .collect();
+        source.close().unwrap();
+
+        // A fresh install still pays the same replicated compilation charge,
+        // even though the physical compilation is served from the shared cache.
+        {
+            let pic = cached_instance(runtime.clone(), pool.clone(), None, IcpConfig::default());
+            let sm = pic.subnets.get_all().pop().unwrap().state_machine.clone();
+            let id = sm
+                .install_canister_with_cycles(wasm.clone(), vec![], None, TEST_CYCLES)
+                .unwrap();
+            assert_eq!(sm.cycle_balance(id), cold_balance);
+            assert_eq!(compilation_count(&sm), 0);
+        }
+
+        let mut restored = std::thread::scope(|scope| {
+            let mut handles = vec![];
+            for dir in &children {
+                let runtime = runtime.clone();
+                let pool = pool.clone();
+                handles.push(scope.spawn(move || {
+                    let pic = cached_instance(
+                        runtime,
+                        pool,
+                        Some(dir.path().into()),
+                        IcpConfig::default(),
+                    );
+                    let sm = pic.subnets.get_all().pop().unwrap().state_machine.clone();
+                    assert_eq!(
+                        sm.query(canister_id, "read", vec![]).unwrap(),
+                        WasmResult::Reply(vec![0; 8])
+                    );
+                    sm.execute_ingress(canister_id, "inc", vec![]).unwrap();
+                    assert_eq!(
+                        sm.query(canister_id, "read", vec![]).unwrap(),
+                        WasmResult::Reply(vec![1, 0, 0, 0, 1, 0, 0, 0])
+                    );
+                    assert_eq!(compilation_count(&sm), 0);
+                    let lookups = fetch_int_counter_vec(
+                        &sm.metrics_registry,
+                        "sandboxed_execution_replica_cache_lookups",
+                    );
+                    assert!(lookups[&labels(&[("lookup_result", "compilation_cache_hit")])] > 0);
+
+                    drop(sm);
+                    pic
+                }));
+            }
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+
+        let changed = restored.pop().unwrap();
+        let (balance, time) = {
+            let sm = changed
+                .subnets
+                .get_all()
+                .pop()
+                .unwrap()
+                .state_machine
+                .clone();
+            let balance = sm.cycle_balance(canister_id);
+            let time = sm.time();
+            sm.execute_ingress(canister_id, "inc", vec![]).unwrap();
+            sm.add_cycles(canister_id, 1_000_000);
+            sm.set_time(time + Duration::from_secs(60));
+            // Hits alone would not detect a deleted backing directory: insertion
+            // must also work after deleting the original instance's state directory.
+            sm.install_canister_with_cycles(
+                wat::parse_str("(module)").unwrap(),
+                vec![],
+                None,
+                TEST_CYCLES,
+            )
+            .unwrap();
+            assert_eq!(compilation_count(&sm), 1);
+            (balance, time)
+        };
+        drop(changed);
+        for pic in &restored {
+            let sm = pic.subnets.get_all().pop().unwrap().state_machine.clone();
+            assert_eq!(sm.cycle_balance(canister_id), balance);
+            assert_eq!(sm.time(), time);
+            assert_eq!(
+                sm.query(canister_id, "read", vec![]).unwrap(),
+                WasmResult::Reply(vec![1, 0, 0, 0, 1, 0, 0, 0])
+            );
+            assert_eq!(compilation_count(&sm), 0);
+        }
+
+        // A different server owns a different pool and therefore starts cold.
+        let pic = cached_instance(
+            runtime,
+            Arc::new(CompilationCachePool::default()),
+            None,
+            IcpConfig::default(),
+        );
+        let sm = pic.subnets.get_all().pop().unwrap().state_machine.clone();
+        sm.install_canister_with_cycles(wasm, vec![], None, TEST_CYCLES)
+            .unwrap();
+        assert_eq!(compilation_count(&sm), 1);
+    }
+
+    #[test]
+    fn shared_compilation_cache_respects_validation_config() {
+        let runtime = Arc::new(Runtime::new().unwrap());
+        let pool = Arc::new(CompilationCachePool::default());
+        let limit = ic_config::embedders::Config::default().max_sum_exported_function_name_lengths;
+        let wasm = wat::parse_str(format!(
+            "(module (func (export \"canister_query {}\")))",
+            "x".repeat(limit + 1)
+        ))
+        .unwrap();
+        let relaxed = cached_instance(
+            runtime.clone(),
+            pool.clone(),
+            None,
+            IcpConfig {
+                function_name_length_limits: Some(IcpConfigFlag::Disabled),
+                ..Default::default()
+            },
+        );
+        {
+            let sm = relaxed
+                .subnets
+                .get_all()
+                .pop()
+                .unwrap()
+                .state_machine
+                .clone();
+            sm.install_canister_with_cycles(wasm.clone(), vec![], None, TEST_CYCLES)
+                .unwrap();
+            assert_eq!(compilation_count(&sm), 1);
+        }
+        drop(relaxed);
+        let strict = cached_instance(runtime, pool, None, IcpConfig::default());
+        let sm = strict
+            .subnets
+            .get_all()
+            .pop()
+            .unwrap()
+            .state_machine
+            .clone();
+        let error = sm
+            .install_canister_with_cycles(wasm, vec![], None, TEST_CYCLES)
+            .unwrap_err();
+        assert_eq!(error.code(), ic_error_types::ErrorCode::CanisterInvalidWasm);
+    }
 
     #[tokio::test]
     async fn state_label_test() {
@@ -6169,6 +6446,7 @@ mod tests {
                 None,
                 false,
                 MaliciousFlags::default(),
+                Arc::new(CompilationCachePool::default()),
             )
             .unwrap();
             let mut pic1 = PocketIc::try_new(
@@ -6191,6 +6469,7 @@ mod tests {
                 None,
                 false,
                 MaliciousFlags::default(),
+                Arc::new(CompilationCachePool::default()),
             )
             .unwrap();
             assert_ne!(pic0.get_state_label(), pic1.get_state_label());

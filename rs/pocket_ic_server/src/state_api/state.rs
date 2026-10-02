@@ -27,6 +27,7 @@ use http::{
         IF_MODIFIED_SINCE, IF_NONE_MATCH, RANGE, USER_AGENT,
     },
 };
+use ic_embedders::CompilationCachePool;
 use ic_gateway::ic_bn_lib::http::{
     client::{Client, ClientOptions},
     server::conn::ConnInfo,
@@ -189,6 +190,8 @@ impl Graph {
 
 /// The state of the PocketIC API.
 pub struct ApiState {
+    // Retain compiled code even when all instances have been deleted.
+    compilation_cache_pool: Arc<CompilationCachePool>,
     // impl note: If locks are acquired on both fields, acquire first on `instances` and then on `graph`.
     instances: Arc<RwLock<Vec<Mutex<Instance>>>>,
     graph: Arc<RwLock<Graph>>,
@@ -237,6 +240,7 @@ impl PocketIcApiStateBuilder {
         let instances = Arc::new(RwLock::new(instances));
 
         Arc::new(ApiState {
+            compilation_cache_pool: Arc::new(CompilationCachePool::default()),
             instances,
             graph: Arc::new(RwLock::new(Graph::default())),
             seed: AtomicU64::new(0),
@@ -633,7 +637,9 @@ impl ApiState {
         instance_http_gateway_config: Option<InstanceHttpGatewayConfig>,
     ) -> Result<(InstanceId, Topology, Option<HttpGatewayInfo>), String>
     where
-        F: FnOnce(u64, Option<u16>) -> Result<PocketIc, String> + std::marker::Send + 'static,
+        F: FnOnce(u64, Option<u16>, Arc<CompilationCachePool>) -> Result<PocketIc, String>
+            + std::marker::Send
+            + 'static,
     {
         let seed = self.seed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let listener = if let Some(ref instance_http_gateway_config) = instance_http_gateway_config
@@ -649,9 +655,12 @@ impl ApiState {
             .as_ref()
             .map(|listener| listener.local_addr().unwrap().port());
         // create the instance using `spawn_blocking` before acquiring a lock
-        let instance = tokio::task::spawn_blocking(move || create_instance(seed, gateway_port))
-            .await
-            .expect("Failed to create PocketIC instance")?;
+        let compilation_cache_pool = Arc::clone(&self.compilation_cache_pool);
+        let instance = tokio::task::spawn_blocking(move || {
+            create_instance(seed, gateway_port, compilation_cache_pool)
+        })
+        .await
+        .expect("Failed to create PocketIC instance")?;
         let topology = instance.topology();
         let mut instances = self.instances.write().await;
         let instance_id = instances.len();

@@ -356,6 +356,7 @@ impl Player {
             state_manager.get_fd_factory(),
             completed_execution_messages_tx,
             &state_manager.state_layout().tmp(),
+            None,
         );
         let message_routing = Arc::new(MessageRoutingImpl::new(
             state_manager.clone(),

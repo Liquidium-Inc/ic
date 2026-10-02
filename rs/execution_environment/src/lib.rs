@@ -33,6 +33,7 @@ pub use hypervisor::{
 use ic_base_types::PrincipalId;
 use ic_config::{execution_environment::Config, subnet_config::SubnetConfig};
 use ic_cycles_account_manager::CyclesAccountManager;
+use ic_embedders::CompilationCachePool;
 use ic_embedders::wasm_executor::WasmExecutor;
 use ic_interfaces::execution_environment::{
     IngressFilterService, IngressHistoryReader, QueryExecutionService, Scheduler,
@@ -125,6 +126,7 @@ impl ExecutionServices {
         fd_factory: Arc<dyn PageAllocatorFileDescriptor>,
         completed_execution_messages_tx: Sender<(MessageId, Height)>,
         temp_dir: &Path,
+        compilation_cache_pool: Option<&CompilationCachePool>,
     ) -> ExecutionServices {
         let (
             ingress_filter,
@@ -147,6 +149,7 @@ impl ExecutionServices {
             Arc::clone(&fd_factory),
             completed_execution_messages_tx,
             temp_dir,
+            compilation_cache_pool,
             None,
             RoundSchedule::compute_capacity_percent(subnet_config.scheduler_config.scheduler_cores),
         );
@@ -272,6 +275,7 @@ impl ExecutionServicesForTesting {
             fd_factory,
             completed_execution_messages_tx,
             temp_dir,
+            None,
             wasm_executor,
             // Compute capacity for 2-core scheduler is 100%
             // TODO(RUN-319): the capacity should be defined based on actual `scheduler_cores`
@@ -302,6 +306,7 @@ fn setup_execution_helper(
     fd_factory: Arc<dyn PageAllocatorFileDescriptor>,
     completed_execution_messages_tx: Sender<(MessageId, Height)>,
     temp_dir: &Path,
+    compilation_cache_pool: Option<&CompilationCachePool>,
     wasm_executor: Option<Arc<dyn WasmExecutor>>,
     compute_capacity: usize,
 ) -> (
@@ -335,6 +340,7 @@ fn setup_execution_helper(
             Arc::clone(&fd_factory),
             Arc::clone(&state_reader),
             temp_dir,
+            compilation_cache_pool,
         ),
         Some(wasm_executor) => Hypervisor::new_for_testing(
             metrics_registry,
